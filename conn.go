@@ -266,6 +266,10 @@ func (c *Conn) Close(ctx context.Context) error {
 // name and sql arguments. This allows a code path to Prepare and Query/Exec without
 // concern for if the statement has already been prepared.
 func (c *Conn) Prepare(ctx context.Context, name, sql string) (sd *pgconn.StatementDescription, err error) {
+	return c.prepare(ctx, name, sql, nil)
+}
+
+func (c *Conn) prepare(ctx context.Context, name, sql string, paramOIDs []uint32) (sd *pgconn.StatementDescription, err error) {
 	if name != "" {
 		var ok bool
 		if sd, ok = c.preparedStatements[name]; ok && sd.SQL == sql {
@@ -280,8 +284,11 @@ func (c *Conn) Prepare(ctx context.Context, name, sql string) (sd *pgconn.Statem
 			}
 		}()
 	}
-
-	sd, err = c.pgConn.Prepare(ctx, name, sql, nil)
+	if paramOIDs == nil {
+		sd, err = c.pgConn.Prepare(ctx, name, sql, paramOIDs)
+	} else {
+		sd, err = c.pgConn.Parse(ctx, name, sql, paramOIDs)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -429,7 +436,7 @@ optionLoop:
 	}
 
 	if c.stmtcache != nil {
-		sd, err := c.stmtcache.Get(ctx, sql)
+		sd, err := c.getStatementDescription(ctx, sql, arguments)
 		if err != nil {
 			return nil, err
 		}
@@ -440,11 +447,36 @@ optionLoop:
 		return c.execPrepared(ctx, sd, arguments)
 	}
 
-	sd, err := c.Prepare(ctx, "", sql)
+	sd, err := c.prepare(ctx, "", sql, c.paramOIDsFromArguments(arguments))
 	if err != nil {
 		return nil, err
 	}
 	return c.execPrepared(ctx, sd, arguments)
+}
+
+func (c *Conn) getStatementDescription(ctx context.Context, sql string, arguments []interface{}) (*pgconn.StatementDescription, error) {
+	if cache, ok := c.stmtcache.(stmtcache.CacheWithParamOIDs); ok {
+		sd, err := cache.GetWithParamOIDs(ctx, sql, c.paramOIDsFromArguments(arguments))
+		if err != nil {
+			return nil, err
+		}
+		return sd, nil
+	}
+	sd, err := c.stmtcache.Get(ctx, sql)
+	if err != nil {
+		return nil, err
+	}
+	return sd, nil
+}
+
+func (c *Conn) paramOIDsFromArguments(arguments []interface{}) []uint32 {
+	paramOIDs := make([]uint32, len(arguments))
+	for i, arg := range arguments {
+		if dt, ok := c.ConnInfo().DataTypeForValue(arg); ok {
+			paramOIDs[i] = dt.OID
+		}
+	}
+	return paramOIDs
 }
 
 func (c *Conn) execSimpleProtocol(ctx context.Context, sql string, arguments []interface{}) (commandTag pgconn.CommandTag, err error) {
@@ -595,13 +627,13 @@ optionLoop:
 
 	if !ok {
 		if c.stmtcache != nil {
-			sd, err = c.stmtcache.Get(ctx, sql)
+			sd, err = c.getStatementDescription(ctx, sql, args)
 			if err != nil {
 				rows.fatal(err)
 				return rows, rows.err
 			}
 		} else {
-			sd, err = c.pgConn.Prepare(ctx, "", sql, nil)
+			sd, err = c.pgConn.Prepare(ctx, "", sql, c.paramOIDsFromArguments(args))
 			if err != nil {
 				rows.fatal(err)
 				return rows, rows.err
