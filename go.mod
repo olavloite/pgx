@@ -21,5 +21,5 @@ require (
 )
 
 replace (
-	github.com/jackc/pgconn => /home/loite/GolandProjects/pgconn
+	github.com/jackc/pgconn => /Users/loite/go/src/pgconn
 )

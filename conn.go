@@ -436,7 +436,7 @@ optionLoop:
 	}
 
 	if c.stmtcache != nil {
-		sd, err := c.getStatementDescription(ctx, sql, arguments)
+		sd, err := c.getStatementDescription(ctx, sql, false, arguments)
 		if err != nil {
 			return nil, err
 		}
@@ -454,15 +454,19 @@ optionLoop:
 	return c.execPrepared(ctx, sd, arguments)
 }
 
-func (c *Conn) getStatementDescription(ctx context.Context, sql string, arguments []interface{}) (*pgconn.StatementDescription, error) {
+func (c *Conn) getStatementDescription(ctx context.Context, sql string, isQuery bool, arguments []interface{}) (sd *pgconn.StatementDescription, err error) {
 	if cache, ok := c.stmtcache.(stmtcache.CacheWithParamOIDs); ok {
-		sd, err := cache.GetWithParamOIDs(ctx, sql, c.paramOIDsFromArguments(arguments))
+		if isQuery {
+			sd, err = cache.GetQuery(ctx, sql, c.paramOIDsFromArguments(arguments))
+		} else {
+			sd, err = cache.GetExec(ctx, sql, c.paramOIDsFromArguments(arguments))
+		}
 		if err != nil {
 			return nil, err
 		}
 		return sd, nil
 	}
-	sd, err := c.stmtcache.Get(ctx, sql)
+	sd, err = c.stmtcache.Get(ctx, sql)
 	if err != nil {
 		return nil, err
 	}
@@ -627,7 +631,7 @@ optionLoop:
 
 	if !ok {
 		if c.stmtcache != nil {
-			sd, err = c.getStatementDescription(ctx, sql, args)
+			sd, err = c.getStatementDescription(ctx, sql, true, args)
 			if err != nil {
 				rows.fatal(err)
 				return rows, rows.err
